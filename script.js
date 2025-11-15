@@ -48,13 +48,6 @@ function showStatus(message, type) {
     statusAlert.classList.remove('d-none');
 
     console.log('  - ✅ Status alert đã được hiển thị');
-
-    // Tự động ẩn sau 5 giây nếu là success hoặc error
-    if (type === 'success' || type === 'danger') {
-        setTimeout(() => {
-            hideStatus();
-        }, 5000);
-    }
 }
 
 /**
@@ -212,11 +205,25 @@ async function handleSignature() {
         console.log('  - Address:', donorAddr);
         console.log('  - Hex Message:', hexMessage);
         
-        const signature = await walletAPI.signData(donorAddr, hexMessage);
-        console.log('✅ Đã nhận được chữ ký thành công!');
-        console.log('  - Signature object:', signature);
-        console.log('  - Signature value:', signature.signature);
-        console.log('  - Signature length:', signature.signature.length, 'characters');
+        let signature;
+        try {
+            signature = await walletAPI.signData(donorAddr, hexMessage);
+            console.log('✅ Đã nhận được chữ ký thành công!');
+            console.log('  - Signature object:', signature);
+            console.log('  - Signature value:', signature.signature);
+            console.log('  - Signature length:', signature.signature.length, 'characters');
+        } catch (signError) {
+            console.error('❌ Lỗi khi ký message:', signError);
+            
+            // Xử lý các loại lỗi cụ thể
+            if (signError.info && signError.info.includes('address not found')) {
+                throw new Error('Địa chỉ Donor không tồn tại trong ví Yoroi của bạn. Vui lòng kiểm tra lại địa chỉ hoặc chọn địa chỉ đúng từ ví.');
+            } else if (signError.code === 2) {
+                throw new Error('Người dùng đã từ chối ký. Vui lòng chấp nhận yêu cầu ký từ Yoroi Wallet.');
+            } else {
+                throw new Error(signError.info || signError.message || 'Không thể ký message. Vui lòng thử lại.');
+            }
+        }
 
         // Tạo cURL command
         console.log('🔧 Đang tạo cURL command...');
@@ -242,20 +249,33 @@ async function handleSignature() {
         console.error('  - Error object:', error);
         console.error('  - Error message:', error.message);
         console.error('  - Error info:', error.info);
+        console.error('  - Error code:', error.code);
         console.error('  - Error stack:', error.stack);
         
         let errorMessage = 'Đã xảy ra lỗi không xác định.';
         
-        if (error.message.includes('Yoroi')) {
+        // Xử lý các loại lỗi cụ thể
+        if (error.message.includes('Địa chỉ Donor không tồn tại')) {
+            errorMessage = error.message;
+        } else if (error.message.includes('từ chối ký')) {
+            errorMessage = error.message;
+        } else if (error.message.includes('Yoroi Wallet')) {
             errorMessage = 'Vui lòng cài đặt và mở Yoroi Wallet extension.';
         } else if (error.info) {
-            errorMessage = error.info;
+            // Xử lý error.info từ Yoroi
+            if (error.info.includes('address not found')) {
+                errorMessage = 'Địa chỉ Donor không tồn tại trong ví Yoroi của bạn. Vui lòng kiểm tra lại địa chỉ.';
+            } else {
+                errorMessage = error.info;
+            }
         } else if (error.message) {
             errorMessage = error.message;
         }
         
+        console.error('📢 Hiển thị lỗi cho người dùng:', errorMessage);
+        
         showStatus(
-            `<i class="fas fa-times-circle me-2"></i>Lỗi: ${errorMessage}`,
+            `<i class="fas fa-times-circle me-2"></i><strong>Lỗi:</strong> ${errorMessage}`,
             'danger'
         );
         
@@ -391,24 +411,69 @@ elements.copyBtn.addEventListener('click', () => {
 // ========================================
 
 /**
+ * Đợi Yoroi Wallet được inject vào trang
+ */
+async function waitForYoroi(maxAttempts = 10, delay = 500) {
+    console.log('⏳ Đang chờ Yoroi Wallet được inject...');
+    
+    for (let i = 0; i < maxAttempts; i++) {
+        console.log(`  - Lần thử ${i + 1}/${maxAttempts}...`);
+        
+        if (window.cardano && window.cardano.yoroi) {
+            console.log('✅ Yoroi Wallet đã được inject thành công!');
+            return true;
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, delay));
+    }
+    
+    console.error('❌ Timeout: Không thể tìm thấy Yoroi Wallet sau', maxAttempts, 'lần thử');
+    return false;
+}
+
+/**
  * Khởi tạo ứng dụng
  */
-function init() {
+async function init() {
     console.log('🚀 ===== YOROI SIGNATURE TOOL STARTING =====');
     console.log('📅 Timestamp:', new Date().toLocaleString('vi-VN'));
     console.log('🌐 User Agent:', navigator.userAgent);
+    console.log('🌍 Location:', window.location.href);
     console.log('🔧 Đang khởi tạo ứng dụng...');
     
     // Kiểm tra Yoroi Wallet ngay khi load
     console.log('🔍 Đang kiểm tra Yoroi Wallet...');
     
     if (!window.cardano) {
-        console.warn('⚠️ window.cardano không tồn tại - Yoroi Wallet chưa được cài đặt');
+        console.warn('⚠️ window.cardano không tồn tại - Đang chờ Yoroi inject...');
+        
+        // Chờ Yoroi được inject
+        const yoroiFound = await waitForYoroi();
+        
+        if (!yoroiFound) {
+            console.error('❌ Yoroi Wallet không được tìm thấy');
+            showStatus(
+                '<i class="fas fa-exclamation-triangle me-2"></i><strong>Cảnh báo:</strong> Yoroi Wallet chưa được cài đặt hoặc chưa được bật. <br><small>Vui lòng cài đặt extension và refresh trang.</small>',
+                'danger'
+            );
+            return;
+        }
     } else {
         console.log('✅ window.cardano tồn tại');
         
         if (!window.cardano.yoroi) {
-            console.warn('⚠️ window.cardano.yoroi không tồn tại - Yoroi Wallet chưa được phát hiện');
+            console.warn('⚠️ window.cardano.yoroi không tồn tại - Đang chờ...');
+            
+            const yoroiFound = await waitForYoroi();
+            
+            if (!yoroiFound) {
+                console.error('❌ window.cardano.yoroi không được phát hiện');
+                showStatus(
+                    '<i class="fas fa-exclamation-triangle me-2"></i><strong>Cảnh báo:</strong> Yoroi Wallet chưa được phát hiện. <br><small>Hãy đảm bảo extension đã được cài đặt và bật.</small>',
+                    'danger'
+                );
+                return;
+            }
         } else {
             console.log('✅ window.cardano.yoroi tồn tại');
             console.log('📦 Yoroi object:', window.cardano.yoroi);
